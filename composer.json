@@ -1,0 +1,44 @@
+{
+    "name": "bycerfrance/json-fragments",
+    "description": "Externalize JSON branches into immutable storage fragments and resolve references lazily",
+    "keywords": ["json", "fragments", "references", "lazy-loading", "flysystem"],
+    "license": "MIT",
+    "type": "library",
+    "homepage": "https://github.com/ByCerfrance/JsonFragments",
+    "support": {
+        "issues": "https://github.com/ByCerfrance/JsonFragments/issues",
+        "source": "https://github.com/ByCerfrance/JsonFragments"
+    },
+    "authors": [
+        {
+            "name": "Vigicorp",
+            "homepage": "https://www.vigicorp.fr"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "ByCerfrance\\JsonFragments\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ByCerfrance\\JsonFragments\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": "^8.3"
+    },
+    "require-dev": {
+        "league/flysystem": "^3.0",
+        "league/flysystem-memory": "^3.0",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^12.0"
+    },
+    "suggest": {
+        "league/flysystem": "Required to use the Flysystem storage adapter (^3.0)"
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit --colors=never --stderr",
+        "analyse": "vendor/bin/phpstan analyse src tests"
+    }
+}

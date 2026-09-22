@@ -1,0 +1,6 @@
+/.phpunit.cache/
+/auth.json
+/vendor/
+/composer.lock
+/phpunit.xml
+/.idea/
