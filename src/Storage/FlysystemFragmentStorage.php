@@ -20,6 +20,7 @@ final readonly class FlysystemFragmentStorage implements
     public function __construct(
         private FilesystemOperator $filesystem,
         private string $referencePrefix = 'jsonfragment://',
+        private string $storagePrefix = '',
     ) {
         if (!preg_match('~^[a-z][a-z0-9+.-]*://~', $referencePrefix)
             || !str_ends_with($referencePrefix, '/')
@@ -32,7 +33,7 @@ final readonly class FlysystemFragmentStorage implements
     public function store(mixed $value): JsonReference
     {
         if ($value instanceof JsonReference && $this->supports($value)) {
-            $this->key($value);
+            $this->path($this->key($value));
 
             return $value;
         }
@@ -40,7 +41,7 @@ final readonly class FlysystemFragmentStorage implements
         $json = JsonValue::encode($value);
         // Identity belongs to this fragment, not to the document or its content.
         $key = bin2hex(random_bytes(16)) . '.json';
-        $this->filesystem->write($key, $json);
+        $this->filesystem->write($this->path($key), $json);
 
         return new JsonReference($this->referencePrefix . $key);
     }
@@ -73,7 +74,7 @@ final readonly class FlysystemFragmentStorage implements
     #[Override]
     public function readStream(JsonReference $reference)
     {
-        return $this->filesystem->readStream($this->key($reference));
+        return $this->filesystem->readStream($this->path($this->key($reference)));
     }
 
     private function key(JsonReference $reference): string
@@ -82,6 +83,20 @@ final readonly class FlysystemFragmentStorage implements
             throw new InvalidArgumentException(sprintf('Unsupported reference: %s', $reference->getRef()));
         }
 
-        return StoragePath::key(substr($reference->getRef(), strlen($this->referencePrefix)));
+        return substr($reference->getRef(), strlen($this->referencePrefix));
+    }
+
+    private function path(string $key): string
+    {
+        $key = StoragePath::key($key);
+
+        if ('' === $this->storagePrefix) {
+            return $key;
+        }
+
+        // Keep mount identifiers such as results:// intact, including at the mount root.
+        $separator = str_ends_with($this->storagePrefix, '/') ? '' : '/';
+
+        return $this->storagePrefix . $separator . $key;
     }
 }

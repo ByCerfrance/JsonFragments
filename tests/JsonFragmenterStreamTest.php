@@ -5,17 +5,20 @@ declare(strict_types=1);
 namespace ByCerfrance\JsonFragments\Tests;
 
 use ByCerfrance\JsonFragments\Internal\JsonValue;
+use ByCerfrance\JsonFragments\Internal\StoragePath;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamEncoder;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamWrapper;
 use ByCerfrance\JsonFragments\Internal\Stream\SegmentReader;
 use ByCerfrance\JsonFragments\JsonFragment;
 use ByCerfrance\JsonFragments\JsonFragmenter;
 use ByCerfrance\JsonFragments\JsonReference;
+use ByCerfrance\JsonFragments\Storage\FlysystemFragmentStorage;
 use ByCerfrance\JsonFragments\Storage\JsonFragmentStoreInterface;
 use ByCerfrance\JsonFragments\Tests\Fixture\StreamingStoreInterface;
 use InvalidArgumentException;
 use JsonException;
 use JsonSerializable;
+use League\Flysystem\FilesystemOperator;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\UsesClass;
@@ -29,6 +32,8 @@ use RuntimeException;
 #[UsesClass(JsonReference::class)]
 #[UsesClass(JsonFragment::class)]
 #[UsesClass(JsonValue::class)]
+#[UsesClass(FlysystemFragmentStorage::class)]
+#[UsesClass(StoragePath::class)]
 final class JsonFragmenterStreamTest extends TestCase
 {
     /** @return resource */
@@ -196,6 +201,44 @@ final class JsonFragmenterStreamTest extends TestCase
         self::assertGreaterThan(0, ftell($resource));
         self::assertLessThanOrEqual(8192, ftell($resource));
         fclose($stream);
+        self::assertFalse(is_resource($resource));
+    }
+
+    public function testPrefixedFlysystemStreamOpensLazilyAndClosesAfterPartialRead(): void
+    {
+        $resource = $this->resource('"' . str_repeat('x', 1024 * 1024) . '"');
+        $opened = false;
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::once())->method('readStream')
+            ->with('results://document-a/first.json')
+            ->willReturnCallback(static function () use (&$opened, $resource) {
+                $opened = true;
+
+                return $resource;
+            });
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: 'results://document-a');
+        self::assertFalse($opened);
+        $fragmenter = new JsonFragmenter($storage);
+        $data = [
+            new JsonReference('jsonfragment://first.json'),
+            new JsonReference('jsonfragment://second.json'),
+        ];
+
+        $unread = $fragmenter->stream($data);
+        fclose($unread);
+        self::assertFalse($opened);
+
+        $stream = $fragmenter->stream($data);
+        try {
+            self::assertFalse($opened);
+            self::assertSame('["' . str_repeat('x', 30), fread($stream, 32));
+            self::assertTrue($opened);
+            self::assertGreaterThan(0, ftell($resource));
+            self::assertLessThanOrEqual(8192, ftell($resource));
+        } finally {
+            fclose($stream);
+        }
         self::assertFalse(is_resource($resource));
     }
 

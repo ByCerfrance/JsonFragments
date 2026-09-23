@@ -13,6 +13,7 @@ use JsonException;
 use League\Flysystem\Filesystem;
 use League\Flysystem\FilesystemOperator;
 use League\Flysystem\InMemory\InMemoryFilesystemAdapter;
+use League\Flysystem\MountManager;
 use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToWriteFile;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -26,6 +27,71 @@ use PHPUnit\Framework\TestCase;
 #[UsesClass(StoragePath::class)]
 final class FlysystemFragmentStorageTest extends TestCase
 {
+    #[DataProvider('storagePrefixes')]
+    public function testPhysicalPathsAndPublicReferences(string $prefix, string $directory, bool $mounted): void
+    {
+        $filesystem = new Filesystem(new InMemoryFilesystemAdapter());
+        $operator = $mounted ? new MountManager(['results' => $filesystem]) : $filesystem;
+        $storage = new FlysystemFragmentStorage(
+            filesystem: $operator,
+            referencePrefix: 'jsonfragment://',
+            storagePrefix: $prefix,
+        );
+
+        $reference = $storage->store(['value' => 42]);
+        self::assertMatchesRegularExpression('~^jsonfragment://[a-f0-9]{32}\.json$~', $reference->getRef());
+        $key = substr($reference->getRef(), strlen('jsonfragment://'));
+        self::assertSame('{"value":42}', $filesystem->read($directory . $key));
+
+        $filesystem->write($directory . 'abc.json', '[ 1e2, {} ]');
+        $knownReference = new JsonReference('jsonfragment://abc.json');
+        $stream = $storage->readStream($knownReference);
+        try {
+            self::assertSame('[ 1e2, {} ]', stream_get_contents($stream));
+        } finally {
+            fclose($stream);
+        }
+        self::assertEquals([100.0, (object)[]], $storage->resolve($knownReference));
+    }
+
+    public static function storagePrefixes(): iterable
+    {
+        yield 'empty' => ['', '', false];
+        yield 'relative' => ['documents/document-a', 'documents/document-a/', false];
+        yield 'relative trailing slash' => ['documents/document-a/', 'documents/document-a/', false];
+        yield 'mounted' => ['results://document-a', 'document-a/', true];
+        yield 'mounted trailing slash' => ['results://document-a/', 'document-a/', true];
+        yield 'mount root' => ['results://', '', true];
+    }
+
+    public function testSameRelativeKeyIsIsolatedBetweenContexts(): void
+    {
+        $filesystem = new Filesystem(new InMemoryFilesystemAdapter());
+        $manager = new MountManager(['results' => $filesystem]);
+        $filesystem->write('first/abc.json', '"first"');
+        $filesystem->write('second/abc.json', '"second"');
+        $first = new FlysystemFragmentStorage($manager, 'jsonfragment://', 'results://first');
+        $second = new FlysystemFragmentStorage($manager, 'jsonfragment://', 'results://second');
+        $reference = new JsonReference('jsonfragment://abc.json');
+
+        self::assertSame('first', $first->resolve($reference));
+        self::assertSame('second', $second->resolve($reference));
+    }
+
+    #[DataProvider('storagePrefixes')]
+    public function testPrefixIsJoinedWithoutAnExtraSeparator(string $prefix, string $directory, bool $mounted): void
+    {
+        $pathPrefix = ($mounted ? 'results://' : '') . $directory;
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::once())->method('write')->with(
+            self::matchesRegularExpression('~^' . preg_quote($pathPrefix, '~') . '[a-f0-9]{32}\.json$~'),
+            '42',
+        );
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: $prefix);
+
+        $storage->store(42);
+    }
+
     public function testStoreAndResolvePreserveObjectListAndScalarTypes(): void
     {
         $filesystem = new Filesystem(new InMemoryFilesystemAdapter());
@@ -55,7 +121,7 @@ final class FlysystemFragmentStorageTest extends TestCase
         $filesystem->expects(self::never())->method('readStream');
         $filesystem->expects(self::never())->method('write');
         $filesystem->expects(self::never())->method('fileExists');
-        $storage = new FlysystemFragmentStorage($filesystem);
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: 'results://document-a');
         $reference = new JsonReference('jsonfragment://existing.json');
 
         self::assertSame($reference, $storage->store($reference));
@@ -81,11 +147,18 @@ final class FlysystemFragmentStorageTest extends TestCase
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
         $filesystem->expects(self::never())->method('readStream');
-        $storage = new FlysystemFragmentStorage($filesystem, referencePrefix: 'custom://fragments/');
+        $storage = new FlysystemFragmentStorage(
+            $filesystem,
+            referencePrefix: 'custom://fragments/',
+            storagePrefix: 'results://document-a',
+        );
 
         self::assertTrue($storage->supports(new JsonReference('custom://fragments/a.json')));
         self::assertFalse($storage->supports(new JsonReference('jsonfragment://a.json')));
         self::assertFalse($storage->supports(new JsonReference('https://example.org/a.json')));
+        self::assertFalse($storage->supports(new JsonReference('#/definitions/item')));
+        self::assertFalse($storage->supports(new JsonReference('schemas/item.json')));
+        self::assertFalse($storage->supports(new JsonReference('results://document-a/a.json')));
         self::assertFalse($storage->supports(new JsonReference('custom://fragments/a.json', ['extra' => true])));
     }
 
@@ -125,6 +198,39 @@ final class FlysystemFragmentStorageTest extends TestCase
         yield 'encoded traversal' => ['jsonfragment://%2e%2e/file'];
         yield 'empty key' => ['jsonfragment://'];
         yield 'backslash' => ['jsonfragment://owner\\file'];
+        yield 'dot segment' => ['jsonfragment://owner/./file'];
+        yield 'empty segment' => ['jsonfragment://owner//file'];
+        yield 'mount injection' => ['jsonfragment://other://file'];
+        yield 'query' => ['jsonfragment://file?query'];
+        yield 'fragment' => ['jsonfragment://file#fragment'];
+        yield 'control character' => ["jsonfragment://file\0"];
+    }
+
+    #[DataProvider('invalidPrefixedOperations')]
+    public function testInvalidPrefixedKeyFailsBeforeIo(string $ref, string $operation): void
+    {
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
+        $filesystem->expects(self::never())->method('write');
+        $filesystem->expects(self::never())->method('fileExists');
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: 'results://document-a');
+
+        $this->expectException(InvalidArgumentException::class);
+        $storage->{$operation}(new JsonReference($ref));
+    }
+
+    public static function invalidPrefixedOperations(): iterable
+    {
+        foreach (self::invalidReferences() as $name => [$ref]) {
+            foreach (['readStream', 'resolve', 'store'] as $operation) {
+                // Unsupported references are valid data for store().
+                if ('store' === $operation && !str_starts_with($ref, 'jsonfragment://')) {
+                    continue;
+                }
+                yield $name . ' ' . $operation => [$ref, $operation];
+            }
+        }
     }
 
     public function testMissingFileErrorIsPropagated(): void
@@ -165,15 +271,21 @@ final class FlysystemFragmentStorageTest extends TestCase
         $storage->store(['invalid' => INF]);
     }
 
-    public function testReadStreamReturnsNativeResourceWithoutReadingOrDecoding(): void
+    #[DataProvider('storagePrefixes')]
+    public function testReadStreamReturnsNativeResourceWithoutReadingOrDecoding(
+        string $prefix,
+        string $directory,
+        bool $mounted,
+    ): void
     {
         $resource = fopen('php://memory', 'w+b');
         fwrite($resource, '[1,2,3]');
         rewind($resource);
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
-        $filesystem->expects(self::once())->method('readStream')->with('data.json')->willReturn($resource);
-        $storage = new FlysystemFragmentStorage($filesystem);
+        $path = ($mounted ? 'results://' : '') . $directory . 'data.json';
+        $filesystem->expects(self::once())->method('readStream')->with($path)->willReturn($resource);
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: $prefix);
 
         $stream = $storage->readStream(new JsonReference('jsonfragment://data.json'));
         try {
@@ -191,9 +303,10 @@ final class FlysystemFragmentStorageTest extends TestCase
         $resource = fopen('php://memory', 'w+b');
         fwrite($resource, $content);
         rewind($resource);
-        $filesystem = $this->createStub(FilesystemOperator::class);
-        $filesystem->method('readStream')->willReturn($resource);
-        $storage = new FlysystemFragmentStorage($filesystem);
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::once())->method('readStream')
+            ->with('results://document-a/data.json')->willReturn($resource);
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: 'results://document-a');
 
         try {
             if (!$valid) {
