@@ -1,15 +1,17 @@
 # JsonFragments
 
+[![Latest Version](https://img.shields.io/packagist/v/bycerfrance/json-fragments.svg?style=flat-square)](https://packagist.org/packages/bycerfrance/json-fragments)
+![Packagist Dependency Version](https://img.shields.io/packagist/dependency-v/bycerfrance/json-fragments/php?version=dev-main&style=flat-square)
+[![Software license](https://img.shields.io/github/license/ByCerfrance/JsonFragments.svg?style=flat-square)](https://github.com/ByCerfrance/JsonFragments/blob/main/LICENSE)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/ByCerfrance/JsonFragments/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/ByCerfrance/JsonFragments/actions/workflows/tests.yml?query=branch%3Amain)
+[![Total Downloads](https://img.shields.io/packagist/dt/bycerfrance/json-fragments.svg?style=flat-square)](https://packagist.org/packages/bycerfrance/json-fragments)
+
 PHP library for externalizing JSON branches into immutable storage fragments,
 inspecting references, and resolving their content lazily.
 
 - **Package:** `bycerfrance/json-fragments`
 - **Namespace:** `ByCerfrance\JsonFragments`
 - **Requirements:** PHP 8.3 or later.
-
-## Status
-
-Initial development version. No release has been published yet.
 
 ## Features
 
@@ -23,7 +25,7 @@ Initial development version. No release has been published yet.
 
 ## Installation
 
-Once the package has been published on Packagist:
+Install the library with [Composer](https://getcomposer.org/):
 
 ```bash
 composer require bycerfrance/json-fragments
