@@ -32,10 +32,10 @@ Install the library with [Composer](https://getcomposer.org/):
 composer require bycerfrance/json-fragments
 ```
 
-For the Flysystem integration and optional filesystem scoping:
+For the Flysystem integration:
 
 ```bash
-composer require league/flysystem:^3.0 league/flysystem-path-prefixing:^3.3
+composer require league/flysystem:^3.0
 ```
 
 Install the Flysystem adapter for your backend separately (for example,
@@ -43,18 +43,24 @@ Install the Flysystem adapter for your backend separately (for example,
 
 ## Construction and storage context
 
-Configure the physical prefix using Flysystem's official `PathPrefixedAdapter`
-(`league/flysystem-path-prefixing`). The fragment storage only owns the reference format:
+Configure an optional physical prefix directly on `FlysystemFragmentStorage`.
+The supplied filesystem can be a Flysystem `Filesystem` or `MountManager`:
+
+| Constructor parameter | Purpose | Default |
+| --- | --- | --- |
+| `filesystem` | Flysystem operator used for reads and writes | Required |
+| `referencePrefix` | Public prefix of references stored in JSON | `jsonfragment://` |
+| `storagePrefix` | Physical prefix of paths passed to Flysystem | `''` |
 
 ```php
 use ByCerfrance\JsonFragments\JsonFragmenter;
 use ByCerfrance\JsonFragments\Storage\FlysystemFragmentStorage;
 use League\Flysystem\Filesystem;
-use League\Flysystem\PathPrefixing\PathPrefixedAdapter;
 
 // $adapter is a configured Flysystem adapter (S3, local, etc.).
-$filesystem = new Filesystem(new PathPrefixedAdapter($adapter, 'datasets/weather-station'));
-$fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($filesystem));
+$filesystem = new Filesystem($adapter);
+$storage = new FlysystemFragmentStorage($filesystem, storagePrefix: 'datasets/weather-station');
+$fragmenter = new JsonFragmenter($storage);
 
 $data = [
     'title' => 'Weather observations',
@@ -71,11 +77,43 @@ $compressed = $fragmenter->externalize($data, ['/samples']);
 ```
 
 Each new inline fragment gets a random 128-bit identifier. Supported existing
-references are reused without I/O or existence checks. References are relative to
-the supplied filesystem: the caller must restore the same filesystem context when
-reading a persisted document. The reference does not encode its physical owner prefix.
+references are validated and reused without I/O or existence checks. The caller must
+restore the same filesystem and `storagePrefix` when reading a persisted document.
+The application supplies this context; it is never inferred from the JSON reference.
 
-Copying between filesystem contexts must be explicit: resolve using the source
+### Use an existing MountManager
+
+```php
+// $mountManager has a configured "results" mount; $resultUuid comes from the application.
+$storage = new FlysystemFragmentStorage(
+    filesystem: $mountManager,
+    referencePrefix: 'jsonfragment://',
+    storagePrefix: 'results://' . $resultUuid,
+);
+$fragmenter = new JsonFragmenter($storage);
+$resource = $fragmenter->stream($responseData);
+// Consume the resource, then close it (or transfer ownership to a PSR-7 body).
+```
+
+A reference `jsonfragment://abc.json` maps to `results://<result_uuid>/abc.json`,
+which the mount manager routes to `<result_uuid>/abc.json` on the `results` mount.
+The physical prefix never appears in a generated JSON reference. The application
+keeps the lightweight root document in its database and stores fragments in this context.
+
+Relative prefixes such as `documents/<uuid>` and mounted prefixes accept an optional
+trailing slash. A mount-only prefix such as `results://` is also supported and retains
+its `://` separator. An empty prefix preserves the original paths and behavior;
+existing positional and named constructor calls remain compatible.
+
+Relative fragment keys are validated before prefixing. Absolute paths, parent/dot
+segments and ambiguous keys are rejected before filesystem access. `supports()` only
+inspects the public reference format, independently of the physical prefix.
+Neither constructing the storage nor calling `stream()` opens a fragment.
+
+No path-prefixing decorator is required for this feature. Flysystem's optional
+`PathPrefixedAdapter` remains usable when scoping the filesystem itself is preferred.
+
+Copying between storage contexts must be explicit: resolve using the source
 fragmenter, then externalize the resulting values using the destination fragmenter.
 Passing a source reference directly to a destination store does not copy its content.
 
