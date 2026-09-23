@@ -7,11 +7,15 @@ namespace ByCerfrance\JsonFragments\Storage;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\Internal\StoragePath;
 use ByCerfrance\JsonFragments\JsonReference;
+use ByCerfrance\JsonFragments\Resolver\StreamingJsonReferenceResolverInterface;
 use InvalidArgumentException;
 use League\Flysystem\FilesystemOperator;
 use Override;
+use RuntimeException;
 
-final readonly class FlysystemFragmentStorage implements JsonFragmentStoreInterface
+final readonly class FlysystemFragmentStorage implements
+    JsonFragmentStoreInterface,
+    StreamingJsonReferenceResolverInterface
 {
     public function __construct(
         private FilesystemOperator $filesystem,
@@ -51,12 +55,25 @@ final readonly class FlysystemFragmentStorage implements JsonFragmentStoreInterf
     #[Override]
     public function resolve(JsonReference $reference): mixed
     {
-        return json_decode(
-            $this->filesystem->read($this->key($reference)),
-            associative: false,
-            depth: 512,
-            flags: JSON_THROW_ON_ERROR,
-        );
+        $stream = $this->readStream($reference);
+
+        try {
+            $json = stream_get_contents($stream);
+            if (false === $json) {
+                throw new RuntimeException('Unable to read the JSON fragment.');
+            }
+
+            return json_decode($json, associative: false, depth: 512, flags: JSON_THROW_ON_ERROR);
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    /** @return resource */
+    #[Override]
+    public function readStream(JsonReference $reference)
+    {
+        return $this->filesystem->readStream($this->key($reference));
     }
 
     private function key(JsonReference $reference): string

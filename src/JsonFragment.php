@@ -34,6 +34,12 @@ final class JsonFragment implements JsonSerializable
         return $this->loaded;
     }
 
+    /** The resolver bound to this fragment, including its original storage context. */
+    public function getResolver(): JsonReferenceResolverInterface
+    {
+        return $this->resolver;
+    }
+
     /** Resolve once. Returned objects are detached copies; failures can be retried. */
     public function resolve(): mixed
     {

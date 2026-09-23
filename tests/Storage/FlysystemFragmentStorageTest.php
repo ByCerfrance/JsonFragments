@@ -52,6 +52,7 @@ final class FlysystemFragmentStorageTest extends TestCase
     {
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
         $filesystem->expects(self::never())->method('write');
         $filesystem->expects(self::never())->method('fileExists');
         $storage = new FlysystemFragmentStorage($filesystem);
@@ -64,6 +65,7 @@ final class FlysystemFragmentStorageTest extends TestCase
     {
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
         $filesystem->expects(self::once())->method('write')->with(
             self::matchesRegularExpression('~^[a-f0-9]{32}\.json$~'),
             '{"$ref":"https://example.org/schema","description":"Invoice"}',
@@ -78,6 +80,7 @@ final class FlysystemFragmentStorageTest extends TestCase
     {
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
         $storage = new FlysystemFragmentStorage($filesystem, referencePrefix: 'custom://fragments/');
 
         self::assertTrue($storage->supports(new JsonReference('custom://fragments/a.json')));
@@ -107,6 +110,7 @@ final class FlysystemFragmentStorageTest extends TestCase
     {
         $filesystem = $this->createMock(FilesystemOperator::class);
         $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
         $storage = new FlysystemFragmentStorage($filesystem);
 
         $this->expectException(InvalidArgumentException::class);
@@ -159,5 +163,51 @@ final class FlysystemFragmentStorageTest extends TestCase
 
         $this->expectException(JsonException::class);
         $storage->store(['invalid' => INF]);
+    }
+
+    public function testReadStreamReturnsNativeResourceWithoutReadingOrDecoding(): void
+    {
+        $resource = fopen('php://memory', 'w+b');
+        fwrite($resource, '[1,2,3]');
+        rewind($resource);
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::once())->method('readStream')->with('data.json')->willReturn($resource);
+        $storage = new FlysystemFragmentStorage($filesystem);
+
+        $stream = $storage->readStream(new JsonReference('jsonfragment://data.json'));
+        try {
+            self::assertSame($resource, $stream);
+            self::assertSame(0, ftell($stream));
+            self::assertSame('[1,2,3]', stream_get_contents($stream));
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    #[DataProvider('streamContents')]
+    public function testResolveClosesResourceOnSuccessOrInvalidJson(string $content, bool $valid): void
+    {
+        $resource = fopen('php://memory', 'w+b');
+        fwrite($resource, $content);
+        rewind($resource);
+        $filesystem = $this->createStub(FilesystemOperator::class);
+        $filesystem->method('readStream')->willReturn($resource);
+        $storage = new FlysystemFragmentStorage($filesystem);
+
+        try {
+            if (!$valid) {
+                $this->expectException(JsonException::class);
+            }
+            self::assertSame([1, 2], $storage->resolve(new JsonReference('jsonfragment://data.json')));
+        } finally {
+            self::assertFalse(is_resource($resource));
+        }
+    }
+
+    public static function streamContents(): iterable
+    {
+        yield 'valid' => ['[1,2]', true];
+        yield 'invalid' => ['{broken', false];
     }
 }

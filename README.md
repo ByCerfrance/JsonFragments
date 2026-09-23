@@ -19,6 +19,7 @@ inspecting references, and resolving their content lazily.
 - Reference value objects preserving `$ref` and sibling properties.
 - Explicit resolvers deciding which references they support.
 - Lazy fragments and reference inspection without storage access.
+- Progressive JSON output as a standard PHP stream resource, ready to wrap in a PSR-7 body.
 - One storage per storage resolver, using `jsonfragment://` by default.
 - An optional Flysystem 3 adapter with immutable fragments, each assigned its own
   random identifier within the supplied filesystem.
@@ -106,6 +107,7 @@ associative arrays are therefore not guaranteed to round-trip as PHP arrays.
 | `dehydrate($data)` | New structure with fragments represented as `JsonReference` | None |
 | `resolve($data)` | New structure with supported references replaced by their content | Reads as needed |
 | `references($data)` | Generator of JSON Pointer => `JsonReference` occurrences | None |
+| `stream($data)` | Readable PHP resource producing resolved JSON | Reads lazily as the output is consumed |
 
 The supplied structure is never modified. Arbitrary `JsonSerializable` values are
 normalized by invoking their serialization method; their own side effects remain
@@ -158,6 +160,101 @@ when persisting a structure that may contain lazy fragments.
 For eager resolution, use `$fragmenter->resolve($decoded)` instead of hydration.
 References inside a loaded file are returned as data, not recursively resolved.
 The library does not implement recursive JSON Schema or JSON Reference resolution.
+
+## Stream complete JSON with bounded fragment reads
+
+Use `stream()` when the output is being transmitted or exported rather than manipulated
+as PHP values. Unlike `resolve()` followed by `json_encode()`, it does not materialize
+the complete resolved document or its encoded output.
+
+```php
+// $decoded contains the lightweight document and its references.
+// $destination is an already-open writable stream, such as an export file.
+$stream = $fragmenter->stream($decoded);
+
+try {
+    stream_copy_to_stream($stream, $destination);
+} finally {
+    fclose($stream);
+}
+```
+
+Opening the output performs no fragment reads or inline serialization. Reading it
+starts a lazy producer that emits JSON punctuation, inline values and the content
+of supported references. PHP may read ahead by a small stream buffer, so a small
+`fread()` can cause a bounded amount of additional production.
+
+The output is a read-only, non-seekable resource with unknown size. Rewinding and
+random access are not supported. Multiple output resources can be consumed independently.
+Keep the supplied input unchanged while its stream is open: streaming deliberately
+does not take a deep snapshot of the input document.
+
+### Native streaming and fallback
+
+`Resolver\StreamingJsonReferenceResolverInterface` extends the standard resolver:
+
+```php
+/** @return resource */
+public function readStream(JsonReference $reference);
+```
+
+`FlysystemFragmentStorage` implements both `JsonFragmentStoreInterface` and this
+streaming interface. Its `readStream()` delegates directly to Flysystem's
+`readStream()`. Its `resolve()` reads that stream completely, decodes the JSON and
+closes the resource.
+
+For output produced by `JsonFragmenter::stream()`:
+
+- A streaming resolver supplies a blocking, readable resource containing one complete
+  JSON value. Its bytes are forwarded without decoding or re-encoding the fragment.
+- A classic resolver remains supported: the producer calls `resolve()` and encodes
+  its returned PHP value progressively. This fallback materializes that fragment in memory.
+- A `JsonFragment` uses its own bound resolver and original storage context. Native
+  streaming reads the storage directly, without populating or using the fragment's decoded cache.
+- Unsupported references retain their envelopes and sibling properties.
+- References inside resolved content are not followed recursively.
+
+The native path trusts the resolver to supply valid JSON. It does not validate a
+file's full contents before sending them; malformed stored JSON will produce malformed
+output. Inline values and fallback values are encoded with `JSON_THROW_ON_ERROR`.
+
+Only the current fragment stream is opened. It is consumed from its current position,
+without rewinding, and closed at EOF, on an error or when the output resource is closed.
+The resolver transfers ownership of each returned resource to the consumer.
+
+Memory overhead for native fragments consists primarily of reading buffers and traversal
+state. The input's inline values are already in memory; large inline strings still need
+an encoded string allocation. Custom serializers, fallback resolvers and underlying
+filesystem adapters can also allocate memory. Calling `stream_get_contents()` on the
+output or collecting all chunks into a string materializes the complete result again.
+
+### Use as a PSR-7 response body
+
+```php
+// $streamFactory implements Psr\Http\Message\StreamFactoryInterface (PSR-17).
+$resource = $fragmenter->stream($decoded);
+
+try {
+    $body = $streamFactory->createStreamFromResource($resource);
+} catch (\Throwable $exception) {
+    fclose($resource);
+    throw $exception;
+}
+
+$response = $response
+    ->withHeader('Content-Type', 'application/json')
+    ->withBody($body);
+```
+
+Ownership passes to the PSR-7 body after successful construction; closing it closes
+the output and any currently open fragment. The HTTP emitter must read the body in
+chunks rather than cast it to a string. Do not set a guessed `Content-Length`.
+PSR-7 is not a runtime dependency of this library.
+
+Encoding, opening and read errors propagate while consuming the stream. Bytes already
+sent cannot be withdrawn, so an error after transmission starts may leave an incomplete
+JSON response. The library registers an internal PHP stream wrapper under the reserved
+`bycerfrance-json-fragments` scheme; applications should not replace or unregister it.
 
 ## References and resolvers
 

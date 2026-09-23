@@ -6,6 +6,8 @@ namespace ByCerfrance\JsonFragments;
 
 use ByCerfrance\JsonFragments\Internal\JsonPointer;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
+use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamEncoder;
+use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamWrapper;
 use ByCerfrance\JsonFragments\Storage\JsonFragmentStoreInterface;
 use Closure;
 use Generator;
@@ -99,6 +101,20 @@ final readonly class JsonFragmenter
                 ? JsonValue::copy($this->store->resolve($reference))
                 : $value;
         });
+    }
+
+    /**
+     * Open a read-only JSON stream. Production starts on the first read, without copying the input tree.
+     * Native stream resolvers avoid decoding fragments; other resolvers fall back to materialization.
+     * Keep the input unchanged until the stream is closed. Errors may occur after output has started.
+     *
+     * @param mixed $json Decoded JSON document, references or lazy fragments.
+     * @return resource A readable stream with unknown size; seeking is unsupported. The caller must close it.
+     * @throws \Throwable If the stream cannot be created. Encoding/resolution errors propagate during reads.
+     */
+    public function stream(mixed $json)
+    {
+        return JsonStreamWrapper::open((new JsonStreamEncoder($this->store))->encode($json));
     }
 
     /**

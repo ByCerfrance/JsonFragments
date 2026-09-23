@@ -38,6 +38,16 @@ final class JsonFragmenterTest extends TestCase
         ));
     }
 
+    /** @return resource */
+    private function streamFor(string $json)
+    {
+        $stream = fopen('php://memory', 'w+b');
+        fwrite($stream, $json);
+        rewind($stream);
+
+        return $stream;
+    }
+
     public function testRoundTripPreservesJsonShapesAndInput(): void
     {
         $input = json_decode('{"model":"invoice:1","properties":{"empty":{},"list":[],"value":null}}');
@@ -76,7 +86,7 @@ final class JsonFragmenterTest extends TestCase
     public function testLazyNullIsLoadedOnce(): void
     {
         $storage = $this->createMock(FilesystemOperator::class);
-        $storage->expects(self::once())->method('read')->with('null.json')->willReturn('null');
+        $storage->expects(self::once())->method('readStream')->with('null.json')->willReturn($this->streamFor('null'));
         $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage));
         $fragment = $fragmenter->hydrate(['$ref' => 'jsonfragment://null.json']);
 
@@ -152,7 +162,8 @@ final class JsonFragmenterTest extends TestCase
     {
         $storage = $this->createMock(FilesystemOperator::class);
         $stored = (object)['$ref' => 'jsonfragment://nested.json'];
-        $storage->expects(self::once())->method('read')->with('outer.json')->willReturn(json_encode($stored));
+        $storage->expects(self::once())->method('readStream')->with('outer.json')
+            ->willReturn($this->streamFor(json_encode($stored)));
         $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage));
 
         self::assertEquals($stored, $fragmenter->resolve(['$ref' => 'jsonfragment://outer.json']));
