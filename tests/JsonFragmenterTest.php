@@ -17,10 +17,13 @@ use League\Flysystem\Filesystem;
 use League\Flysystem\FilesystemOperator;
 use League\Flysystem\InMemory\InMemoryFilesystemAdapter;
 use League\Flysystem\PathPrefixing\PathPrefixedAdapter;
+use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToReadFile;
+use LogicException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 #[CoversClass(JsonFragmenter::class)]
 #[UsesClass(JsonFragment::class)]
@@ -240,6 +243,122 @@ final class JsonFragmenterTest extends TestCase
         $hydrated = $fragmenter->hydrate($reference);
         self::assertInstanceOf(JsonFragment::class, $hydrated);
         self::assertSame(['total' => 120], $fragmenter->resolve($hydrated));
+    }
+
+    public function testValidateReferencesChecksEachSupportedReferenceOnceWithoutReading(): void
+    {
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->expects(self::never())->method('read');
+        $storage->expects(self::never())->method('readStream');
+        $checked = [];
+        $storage->expects(self::exactly(2))->method('fileExists')->willReturnCallback(
+            static function (string $path) use (&$checked): bool {
+                $checked[] = $path;
+
+                return true;
+            },
+        );
+        $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage, storagePrefix: 'results://doc'));
+        $input = json_decode(json_encode([
+            'a' => ['$ref' => 'jsonfragment://a.json'],
+            'list' => [['$ref' => 'jsonfragment://a.json'], ['$ref' => 'jsonfragment://b.json']],
+            'web' => ['$ref' => 'https://example.org/schema', 'extra' => ['$ref' => 'jsonfragment://b.json']],
+            'local' => ['$ref' => '#/definitions/address'],
+            'annotated' => ['$ref' => 'jsonfragment://c.json', 'description' => 'Not our envelope'],
+        ]));
+        $before = json_encode($input);
+        $hydrated = $fragmenter->hydrate($input);
+
+        $fragmenter->validateReferences($hydrated);
+
+        self::assertSame(['results://doc/a.json', 'results://doc/b.json'], $checked);
+        self::assertFalse($hydrated->a->isLoaded());
+        self::assertSame($before, json_encode($input));
+    }
+
+    public function testValidateReferencesChecksRootReference(): void
+    {
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->expects(self::once())->method('fileExists')->with('root.json')->willReturn(true);
+        $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage));
+
+        $fragmenter->validateReferences(new JsonReference('jsonfragment://root.json'));
+    }
+
+    public function testValidateReferencesIgnoresDocumentsWithoutSupportedReferences(): void
+    {
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->expects(self::never())->method('fileExists');
+        $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage));
+
+        $fragmenter->validateReferences(['web' => ['$ref' => 'https://example.org/a.json'], 'value' => 1]);
+        $this->addToAssertionCount(1);
+    }
+
+    public function testValidateReferencesFailsOnMissingFragment(): void
+    {
+        $fragmenter = $this->fragmenter();
+        $document = $fragmenter->externalize(['present' => [1], 'items' => []], ['/present']);
+        $document['items'][] = ['$ref' => 'jsonfragment://missing.json'];
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Missing JSON fragment jsonfragment://missing.json at "/items/0".');
+        $fragmenter->validateReferences($document);
+    }
+
+    public function testValidateReferencesPropagatesStorageErrors(): void
+    {
+        $failure = UnableToCheckFileExistence::forLocation('a.json');
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->expects(self::once())->method('fileExists')->willThrowException($failure);
+        $fragmenter = new JsonFragmenter(new FlysystemFragmentStorage($storage));
+
+        $this->expectExceptionObject($failure);
+        $fragmenter->validateReferences(['$ref' => 'jsonfragment://a.json']);
+    }
+
+    public function testValidateReferencesRejectsIncapableResolverBeforeAnyCheck(): void
+    {
+        $storage = $this->createMock(FilesystemOperator::class);
+        $storage->expects(self::never())->method('fileExists');
+        $fragment = new JsonFragment(
+            new JsonReference('jsonfragment://a.json'),
+            new FlysystemFragmentStorage($storage),
+        );
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->method('supports')->willReturnCallback(
+            static fn(JsonReference $value): bool => 'urn' === $value->getScheme(),
+        );
+        $store->expects(self::never())->method('resolve');
+        $fragmenter = new JsonFragmenter($store);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The resolver for urn:fragment:1 at "/custom" cannot check fragment existence.');
+        $fragmenter->validateReferences([
+            'fragment' => $fragment,
+            'custom' => ['$ref' => 'urn:fragment:1'],
+            'web' => ['$ref' => 'https://example.org/a.json'],
+        ]);
+    }
+
+    public function testValidateReferencesUsesEachFragmentStorageContext(): void
+    {
+        $adapter = new InMemoryFilesystemAdapter();
+        $source = new JsonFragmenter(new FlysystemFragmentStorage(
+            new Filesystem(new PathPrefixedAdapter($adapter, 'A')),
+        ));
+        $target = new JsonFragmenter(new FlysystemFragmentStorage(
+            new Filesystem(new PathPrefixedAdapter($adapter, 'B')),
+        ));
+        $reference = $source->externalize(['value' => 1], ['']);
+        $document = ['fragment' => $source->hydrate($reference)];
+
+        $target->validateReferences($document);
+
+        $document['raw'] = $reference;
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('at "/raw"');
+        $target->validateReferences($document);
     }
 
     public function testInspectionAndDehydrationIncludeReferenceSiblings(): void

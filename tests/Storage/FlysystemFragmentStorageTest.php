@@ -14,6 +14,7 @@ use League\Flysystem\Filesystem;
 use League\Flysystem\FilesystemOperator;
 use League\Flysystem\InMemory\InMemoryFilesystemAdapter;
 use League\Flysystem\MountManager;
+use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToWriteFile;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -223,7 +224,7 @@ final class FlysystemFragmentStorageTest extends TestCase
     public static function invalidPrefixedOperations(): iterable
     {
         foreach (self::invalidReferences() as $name => [$ref]) {
-            foreach (['readStream', 'resolve', 'store'] as $operation) {
+            foreach (['exists', 'readStream', 'resolve', 'store'] as $operation) {
                 // Unsupported references are valid data for store().
                 if ('store' === $operation && !str_starts_with($ref, 'jsonfragment://')) {
                     continue;
@@ -231,6 +232,46 @@ final class FlysystemFragmentStorageTest extends TestCase
                 yield $name . ' ' . $operation => [$ref, $operation];
             }
         }
+    }
+
+    #[DataProvider('storagePrefixes')]
+    public function testExistsChecksReadPathWithoutOpening(string $prefix, string $directory, bool $mounted): void
+    {
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::never())->method('read');
+        $filesystem->expects(self::never())->method('readStream');
+        $path = ($mounted ? 'results://' : '') . $directory . 'data.json';
+        $filesystem->expects(self::exactly(2))->method('fileExists')->with($path)
+            ->willReturnOnConsecutiveCalls(true, false);
+        $storage = new FlysystemFragmentStorage($filesystem, storagePrefix: $prefix);
+        $reference = new JsonReference('jsonfragment://data.json');
+
+        self::assertTrue($storage->exists($reference));
+        self::assertFalse($storage->exists($reference));
+    }
+
+    public function testExistsMatchesMountedStorage(): void
+    {
+        $filesystem = new Filesystem(new InMemoryFilesystemAdapter());
+        $filesystem->write('document-a/present.json', '1');
+        $storage = new FlysystemFragmentStorage(
+            new MountManager(['results' => $filesystem]),
+            storagePrefix: 'results://document-a',
+        );
+
+        self::assertTrue($storage->exists(new JsonReference('jsonfragment://present.json')));
+        self::assertFalse($storage->exists(new JsonReference('jsonfragment://missing.json')));
+    }
+
+    public function testExistenceCheckFailureIsPropagated(): void
+    {
+        $failure = UnableToCheckFileExistence::forLocation('data.json');
+        $filesystem = $this->createMock(FilesystemOperator::class);
+        $filesystem->expects(self::once())->method('fileExists')->willThrowException($failure);
+        $storage = new FlysystemFragmentStorage($filesystem);
+
+        $this->expectExceptionObject($failure);
+        $storage->exists(new JsonReference('jsonfragment://data.json'));
     }
 
     public function testMissingFileErrorIsPropagated(): void

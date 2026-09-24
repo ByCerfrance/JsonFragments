@@ -8,10 +8,14 @@ use ByCerfrance\JsonFragments\Internal\JsonPointer;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamEncoder;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamWrapper;
+use ByCerfrance\JsonFragments\Resolver\ExistenceCheckingJsonReferenceResolverInterface;
+use ByCerfrance\JsonFragments\Resolver\JsonReferenceResolverInterface;
 use ByCerfrance\JsonFragments\Storage\JsonFragmentStoreInterface;
 use Closure;
 use Generator;
 use InvalidArgumentException;
+use LogicException;
+use RuntimeException;
 use stdClass;
 
 final readonly class JsonFragmenter
@@ -127,6 +131,38 @@ final readonly class JsonFragmenter
         yield from $this->inspect(JsonValue::copy($json), '');
     }
 
+    /**
+     * Check that every supported reference of the root document exists, without opening or loading fragments.
+     * Unsupported references, such as HTTP or "#/..." references, are ignored. Stored content is not traversed.
+     * Identical references bound to the same resolver are checked once. Lazy fragments use their own resolver.
+     *
+     * @param mixed $json Decoded JSON document, references or lazy fragments.
+     * @throws LogicException If a supported reference's resolver cannot check existence. Raised before any I/O.
+     * @throws RuntimeException If a fragment is missing.
+     * @throws \Throwable If the input is invalid; storage errors are propagated unchanged.
+     */
+    public function validateReferences(mixed $json): void
+    {
+        $checks = [];
+        foreach ($this->supportedReferences(JsonValue::copy($json), '') as [$path, $reference, $resolver]) {
+            if (!$resolver instanceof ExistenceCheckingJsonReferenceResolverInterface) {
+                throw new LogicException(sprintf(
+                    'The resolver for %s at "%s" cannot check fragment existence.',
+                    $reference->getRef(),
+                    $path,
+                ));
+            }
+            $key = spl_object_id($resolver) . ':' . JsonValue::encode($this->dehydrate($reference));
+            $checks[$key] ??= [$path, $reference, $resolver];
+        }
+
+        foreach ($checks as [$path, $reference, $resolver]) {
+            if (!$resolver->exists($reference)) {
+                throw new RuntimeException(sprintf('Missing JSON fragment %s at "%s".', $reference->getRef(), $path));
+            }
+        }
+    }
+
     private function asReference(mixed $value): ?JsonReference
     {
         if ($value instanceof JsonFragment) {
@@ -172,6 +208,30 @@ final readonly class JsonFragmenter
         }
 
         return $value;
+    }
+
+    /**
+     * Yield as a list: several paths may share a reference, and callers keep the first occurrence.
+     *
+     * @return Generator<int, array{string, JsonReference, JsonReferenceResolverInterface}>
+     */
+    private function supportedReferences(mixed $value, string $path): Generator
+    {
+        if ($value instanceof JsonFragment) {
+            // A hydrated fragment keeps its original storage context.
+            yield [$path, $value->getReference(), $value->getResolver()];
+            $value = $value->getReference()->getProperties();
+        } elseif (null !== $reference = $this->asReference($value)) {
+            if ($this->store->supports($reference)) {
+                yield [$path, $reference, $this->store];
+            }
+            $value = $reference->getProperties();
+        }
+        if (is_array($value) || $value instanceof stdClass) {
+            foreach ($value as $key => $child) {
+                yield from $this->supportedReferences($child, JsonPointer::append($path, $key));
+            }
+        }
     }
 
     private function inspect(mixed $value, string $path): Generator

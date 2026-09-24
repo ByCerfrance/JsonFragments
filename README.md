@@ -145,6 +145,7 @@ associative arrays are therefore not guaranteed to round-trip as PHP arrays.
 | `dehydrate($data)` | New structure with fragments represented as `JsonReference` | None |
 | `resolve($data)` | New structure with supported references replaced by their content | Reads as needed |
 | `references($data)` | Generator of JSON Pointer => `JsonReference` occurrences | None |
+| `validateReferences($data)` | Nothing; throws if a supported fragment is missing | Existence checks only |
 | `stream($data)` | Readable PHP resource producing resolved JSON | Reads lazily as the output is consumed |
 
 The supplied structure is never modified. Arbitrary `JsonSerializable` values are
@@ -342,6 +343,41 @@ Inspection reports every string-valued `$ref`, including unsupported references
 and those inside sibling properties. Each occurrence is retained, even when several
 paths refer to the same resource. Lazy fragments are inspected without being loaded.
 Files referenced by the document are not traversed.
+
+### Validate references before use
+
+```php
+$fragmenter->validateReferences($responseData); // Existence checks only; no fragment is opened.
+$resource = $fragmenter->stream($responseData);
+```
+
+`validateReferences()` traverses the root document, including reference sibling
+properties, but never the content of stored fragments. It:
+
+- ignores unsupported references, such as HTTP and `#/...` references;
+- checks identical references bound to the same resolver only once;
+- checks a lazy `JsonFragment` with its own bound resolver and storage context,
+  without loading it;
+- throws a `LogicException`, before any storage access, if a supported reference's
+  resolver cannot check existence;
+- throws a `RuntimeException` naming the reference and its JSON Pointer if a
+  fragment is missing;
+- propagates storage errors unchanged.
+
+Existence checking is a capability declared by
+`Resolver\ExistenceCheckingJsonReferenceResolverInterface`:
+
+```php
+public function exists(JsonReference $reference): bool;
+```
+
+It must not open, read or decode the target. `false` means the target is confirmed
+missing; when existence cannot be determined, the implementation throws rather than
+returning `true`. `FlysystemFragmentStorage` implements it with Flysystem's
+`fileExists()`, using the same physical path and `storagePrefix` as reads.
+
+A successful validation reflects the storage state at the time of the check; a
+fragment deleted afterwards still fails on resolution or streaming.
 
 ### Implement another storage or resolver
 

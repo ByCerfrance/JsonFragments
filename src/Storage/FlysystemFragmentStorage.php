@@ -7,6 +7,7 @@ namespace ByCerfrance\JsonFragments\Storage;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\Internal\StoragePath;
 use ByCerfrance\JsonFragments\JsonReference;
+use ByCerfrance\JsonFragments\Resolver\ExistenceCheckingJsonReferenceResolverInterface;
 use ByCerfrance\JsonFragments\Resolver\StreamingJsonReferenceResolverInterface;
 use InvalidArgumentException;
 use League\Flysystem\FilesystemOperator;
@@ -15,7 +16,8 @@ use RuntimeException;
 
 final readonly class FlysystemFragmentStorage implements
     JsonFragmentStoreInterface,
-    StreamingJsonReferenceResolverInterface
+    StreamingJsonReferenceResolverInterface,
+    ExistenceCheckingJsonReferenceResolverInterface
 {
     public function __construct(
         private FilesystemOperator $filesystem,
@@ -75,6 +77,13 @@ final readonly class FlysystemFragmentStorage implements
     public function readStream(JsonReference $reference)
     {
         return $this->filesystem->readStream($this->path($this->key($reference)));
+    }
+
+    /** Uses the same physical path as reads; Flysystem errors are propagated. */
+    #[Override]
+    public function exists(JsonReference $reference): bool
+    {
+        return $this->filesystem->fileExists($this->path($this->key($reference)));
     }
 
     private function key(JsonReference $reference): string
