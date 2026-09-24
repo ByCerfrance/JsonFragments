@@ -6,6 +6,7 @@ namespace ByCerfrance\JsonFragments\Tests\Internal;
 
 use ByCerfrance\JsonFragments\Internal\JsonPointer;
 use ByCerfrance\JsonFragments\Internal\JsonPointerPattern;
+use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\JsonFragment;
 use ByCerfrance\JsonFragments\JsonReference;
 use ByCerfrance\JsonFragments\Resolver\JsonReferenceResolverInterface;
@@ -16,6 +17,7 @@ use PHPUnit\Framework\TestCase;
 
 #[CoversClass(JsonPointerPattern::class)]
 #[UsesClass(JsonPointer::class)]
+#[UsesClass(JsonValue::class)]
 #[UsesClass(JsonFragment::class)]
 #[UsesClass(JsonReference::class)]
 final class JsonPointerPatternTest extends TestCase
