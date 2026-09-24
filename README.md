@@ -16,6 +16,7 @@ inspecting references, and resolving their content lazily.
 ## Features
 
 - Non-mutating JSON transformations using JSON Pointer paths.
+- Wildcard branch selection with multiple or terminal `*` segments.
 - Reference value objects preserving `$ref` and sibling properties.
 - Explicit resolvers deciding which references they support.
 - Lazy fragments and reference inspection without storage access.
@@ -141,6 +142,7 @@ associative arrays are therefore not guaranteed to round-trip as PHP arrays.
 | Method | Result | Storage access |
 | --- | --- | --- |
 | `externalize($data, $paths)` | New structure with `JsonReference` objects | Writes new fragments; may resolve existing nested references |
+| `externalizeMatching($data, $patterns)` | New structure with each matched branch replaced by a `JsonReference` | Selection performs no I/O; externalization has the same storage behavior as `externalize()` |
 | `hydrate($data)` | New structure with supported references wrapped in `JsonFragment` | None |
 | `dehydrate($data)` | New structure with fragments represented as `JsonReference` | None |
 | `resolve($data)` | New structure with supported references replaced by their content | Reads as needed |
@@ -165,12 +167,46 @@ $compressed = $fragmenter->externalize($data, ['/samples']);
 - Array indices must be non-negative integers without leading zeroes.
 - Missing paths are ignored; existing `null` values are externalized.
 - Duplicate or overlapping paths are rejected before writes.
-- Wildcards and URI-fragment pointers such as `#/samples` are not supported.
+- `externalize()` treats `*` as a literal property name; use `externalizeMatching()` for wildcards.
+- URI-fragment pointers such as `#/samples` are not supported.
 - Pointers traverse inline arrays and objects, not the contents of lazy fragments
   or reference objects. Resolve those first to select a deeper branch.
 
 Transformations enforce a maximum nesting depth of 128 levels and reject cyclic
 input structures and unsupported PHP values such as resources.
+
+### Select branches using wildcards
+
+```php
+// Store each matching test value in its own fragment:
+$compressed = $fragmenter->externalizeMatching($data, [
+    '/items/*/detail/*/test',
+]);
+
+// Alternatively, store each item in its own fragment, keeping the items container inline:
+$compressed = $fragmenter->externalizeMatching($data, ['/items/*']);
+```
+
+Each whole-segment `*` matches every immediate child of a list or object. Multiple
+wildcards and terminal wildcards are supported. For example,
+`/items/*/detail/*/test` can select `/items/0/detail/0/test` and
+`/items/0/detail/1/test`. Property names retain JSON Pointer escaping (`~0` and `~1`).
+Only a complete `*` segment is special: `item*` and `**` are literal property names,
+not partial or recursive wildcards. Use `externalize()` to target a literal `*` key.
+
+- Missing branches, empty collections and scalars encountered before the end of a
+  pattern produce no matches. Existing `null` values at the end are externalized.
+- Exact array indices must be non-negative integers without leading zeroes;
+  invalid indices encountered on non-empty lists are rejected.
+- `''` selects the root, and `'/'` selects an empty property name.
+- All patterns are expanded against one normalized copy of the input before writes.
+  Duplicate concrete selections and parent/descendant overlaps are rejected. Combining
+  `/items/*` and `/items/*/detail/*/test` therefore fails if both select overlapping branches.
+- Selection never loads stored content or traverses `JsonFragment` or `JsonReference`
+  objects. Plain inline arrays and objects are traversed normally.
+- Each selected branch uses the same storage behavior as `externalize()`: supported
+  existing references may be reused, and nested supported references may be resolved
+  when storing a selected branch.
 
 ### Serialize references or complete content
 

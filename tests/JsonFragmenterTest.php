@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ByCerfrance\JsonFragments\Tests;
 
 use ByCerfrance\JsonFragments\Internal\JsonPointer;
+use ByCerfrance\JsonFragments\Internal\JsonPointerPattern;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\Internal\StoragePath;
 use ByCerfrance\JsonFragments\JsonFragment;
@@ -21,6 +22,7 @@ use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToReadFile;
 use LogicException;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\UsesClass;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -29,6 +31,7 @@ use RuntimeException;
 #[UsesClass(JsonFragment::class)]
 #[UsesClass(JsonReference::class)]
 #[UsesClass(JsonPointer::class)]
+#[UsesClass(JsonPointerPattern::class)]
 #[UsesClass(JsonValue::class)]
 #[UsesClass(StoragePath::class)]
 #[UsesClass(FlysystemFragmentStorage::class)]
@@ -39,6 +42,152 @@ final class JsonFragmenterTest extends TestCase
         return new JsonFragmenter(new FlysystemFragmentStorage(
             new Filesystem(new InMemoryFilesystemAdapter()),
         ));
+    }
+
+    public function testExternalizeMatchingNestedAndTerminalWildcards(): void
+    {
+        $input = json_decode('{"items":[{"detail":[{"test":null},{"test":{"value":42}}]}]}');
+        $before = json_encode($input);
+        $fragmenter = $this->fragmenter();
+
+        $nested = $fragmenter->externalizeMatching($input, ['/items/*/detail/*/test']);
+
+        self::assertInstanceOf(JsonReference::class, $nested->items[0]->detail[0]->test);
+        self::assertInstanceOf(JsonReference::class, $nested->items[0]->detail[1]->test);
+        self::assertEquals($input, $fragmenter->resolve($nested));
+
+        $items = $fragmenter->externalizeMatching($input, ['/items/*']);
+
+        self::assertInstanceOf(JsonReference::class, $items->items[0]);
+        self::assertEquals($input, $fragmenter->resolve($items));
+        self::assertSame($before, json_encode($input));
+    }
+
+    public function testMatchingNormalizesSerializableInputOnce(): void
+    {
+        $input = $this->createMock(\JsonSerializable::class);
+        $input->expects(self::once())->method('jsonSerialize')->willReturn(['items' => [42]]);
+
+        $result = $this->fragmenter()->externalizeMatching($input, ['/items/*']);
+
+        self::assertInstanceOf(JsonReference::class, $result['items'][0]);
+    }
+
+    public function testExactExternalizationStillTreatsStarAsLiteral(): void
+    {
+        $result = $this->fragmenter()->externalize(['items' => ['*' => 42, 'other' => 7]], ['/items/*']);
+
+        self::assertInstanceOf(JsonReference::class, $result['items']['*']);
+        self::assertSame(7, $result['items']['other']);
+    }
+
+    /** @return iterable<string, array{list<string>}> */
+    public static function conflictingPatterns(): iterable
+    {
+        yield 'duplicate wildcard' => [['/items/*', '/items/*']];
+        yield 'wildcard and exact match' => [['/items/*', '/items/0']];
+        yield 'parent before descendant' => [['/items/*', '/items/*/detail/*/test']];
+        yield 'descendant before parent' => [['/items/*/detail/*/test', '/items/*']];
+        yield 'root and descendant' => [['', '/items/*']];
+    }
+
+    /** @param list<string> $patterns */
+    #[DataProvider('conflictingPatterns')]
+    public function testMatchingRejectsConflictsBeforeStorageAccess(array $patterns): void
+    {
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->expects(self::never())->method('store');
+        $store->expects(self::never())->method('resolve');
+        $fragmenter = new JsonFragmenter($store);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('JSON Pointers must not overlap or repeat.');
+
+        $fragmenter->externalizeMatching(['items' => [['detail' => [['test' => 42]]]]], $patterns);
+    }
+
+    public function testMatchingValidatesAllBranchesBeforeWriting(): void
+    {
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->expects(self::never())->method('store');
+        $store->expects(self::never())->method('resolve');
+        $fragmenter = new JsonFragmenter($store);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid JSON array index: detail');
+
+        $fragmenter->externalizeMatching(['items' => [['detail' => 42], [7]]], ['/items/*/detail']);
+    }
+
+    public function testMatchingReusesSupportedReferenceWithoutResolution(): void
+    {
+        $reference = new JsonReference('jsonfragment://existing.json');
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->method('supports')->willReturn(true);
+        $store->expects(self::never())->method('resolve');
+        $store->expects(self::once())->method('store')->with($reference)->willReturn($reference);
+
+        $result = (new JsonFragmenter($store))->externalizeMatching(['items' => [$reference]], ['/items/*']);
+
+        self::assertSame($reference, $result['items'][0]);
+    }
+
+    public function testMatchingNoMatchesDoesNotAccessStorage(): void
+    {
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->expects(self::never())->method('store');
+        $store->expects(self::never())->method('resolve');
+        $input = (object)['items' => [null, (object)[], (object)['detail' => []]]];
+
+        $result = (new JsonFragmenter($store))->externalizeMatching($input, [
+            '/items/*/detail/*/test', '/missing/*',
+        ]);
+
+        self::assertEquals($input, $result);
+        self::assertNotSame($input, $result);
+    }
+
+    public function testMatchingObjectChildrenPreservesEscapedAndStarKeys(): void
+    {
+        $input = (object)['items' => (object)['a/b~c' => null, '*' => (object)[]]];
+        $fragmenter = $this->fragmenter();
+
+        $result = $fragmenter->externalizeMatching($input, ['/items/*']);
+
+        self::assertInstanceOf(JsonReference::class, $result->items->{'a/b~c'});
+        self::assertInstanceOf(JsonReference::class, $result->items->{'*'});
+        self::assertEquals($input, $fragmenter->resolve($result));
+    }
+
+    public function testMatchingRootCanExternalizeNull(): void
+    {
+        $fragmenter = $this->fragmenter();
+
+        $result = $fragmenter->externalizeMatching(null, ['']);
+
+        self::assertInstanceOf(JsonReference::class, $result);
+        self::assertNull($fragmenter->resolve($result));
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function invalidPatterns(): iterable
+    {
+        yield 'non-string' => [42];
+        yield 'invalid escape' => ['/missing/~2'];
+        yield 'URI fragment' => ['#/items'];
+    }
+
+    #[DataProvider('invalidPatterns')]
+    public function testMatchingValidatesPatternsBeforeNormalizingOrWriting(mixed $pattern): void
+    {
+        $store = $this->createMock(JsonFragmentStoreInterface::class);
+        $store->expects(self::never())->method('store');
+        $input = $this->createMock(\JsonSerializable::class);
+        $input->expects(self::never())->method('jsonSerialize');
+
+        $this->expectException(InvalidArgumentException::class);
+
+        (new JsonFragmenter($store))->externalizeMatching($input, ['/items/*', $pattern]);
     }
 
     /** @return resource */

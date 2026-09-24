@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ByCerfrance\JsonFragments;
 
 use ByCerfrance\JsonFragments\Internal\JsonPointer;
+use ByCerfrance\JsonFragments\Internal\JsonPointerPattern;
 use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamEncoder;
 use ByCerfrance\JsonFragments\Internal\Stream\JsonStreamWrapper;
@@ -35,6 +36,47 @@ final readonly class JsonFragmenter
      */
     public function externalize(mixed $json, array $paths): mixed
     {
+        $pointers = $this->parsePaths($paths);
+
+        return $this->externalizeSelected(JsonValue::copy($json), $pointers);
+    }
+
+    /**
+     * Externalize branches matched by JSON Pointer patterns with whole-segment wildcards.
+     * Each "*" selects every immediate child of an inline array or object.
+     * Missing matches are ignored. Duplicate or overlapping matches are rejected before writes.
+     * Selection never loads fragments; externalizing selected values may resolve nested references.
+     * Use externalize() for exact pointers containing literal "*" property names.
+     *
+     * @param mixed $json Decoded JSON; strings are scalar values, not encoded documents.
+     * @param list<string> $patterns JSON Pointer patterns.
+     * @return mixed New structure containing JsonReference objects.
+     * @throws \Throwable If patterns, values or storage operations fail. Written objects are not rolled back.
+     */
+    public function externalizeMatching(mixed $json, array $patterns): mixed
+    {
+        foreach ($patterns as $pattern) {
+            if (!is_string($pattern)) {
+                throw new InvalidArgumentException('JSON Pointer patterns must be strings.');
+            }
+            JsonPointer::parse($pattern);
+        }
+
+        $output = JsonValue::copy($json);
+        $paths = [];
+        foreach ($patterns as $pattern) {
+            array_push($paths, ...JsonPointerPattern::expand($output, $pattern));
+        }
+
+        return $this->externalizeSelected($output, $this->parsePaths($paths));
+    }
+
+    /**
+     * @param list<string> $paths
+     * @return list<list<string>>
+     */
+    private function parsePaths(array $paths): array
+    {
         $pointers = [];
         foreach ($paths as $path) {
             if (!is_string($path)) {
@@ -50,7 +92,12 @@ final readonly class JsonFragmenter
             $pointers[] = $tokens;
         }
 
-        $output = JsonValue::copy($json);
+        return $pointers;
+    }
+
+    /** @param list<list<string>> $pointers */
+    private function externalizeSelected(mixed $output, array $pointers): mixed
+    {
         // Validate path traversal before any storage writes.
         foreach ($pointers as $tokens) {
             JsonPointer::replace($output, $tokens, static fn(mixed $value): mixed => $value);
