@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ByCerfrance\JsonFragments\Internal;
 
+use BackedEnum;
 use ByCerfrance\JsonFragments\JsonFragment;
 use ByCerfrance\JsonFragments\JsonReference;
 use InvalidArgumentException;
@@ -26,6 +27,10 @@ final class JsonValue
 
         if ($value instanceof JsonSerializable) {
             return self::copy($value->jsonSerialize(), $depth + 1);
+        }
+
+        if ($value instanceof BackedEnum) {
+            return self::copy($value->value, $depth + 1);
         }
 
         if (is_array($value) || $value instanceof stdClass) {
@@ -51,7 +56,7 @@ final class JsonValue
             return $value;
         }
 
-        throw new InvalidArgumentException('Expected a JSON value, stdClass or JsonSerializable.');
+        throw new InvalidArgumentException('Expected a JSON value, stdClass, JsonSerializable or BackedEnum.');
     }
 
     /** Stable JSON encoding: sort object keys, preserve list order and floating-point values. */

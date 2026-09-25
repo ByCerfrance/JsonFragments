@@ -128,8 +128,8 @@ The library has no framework or ORM dependency.
 ## Transformations
 
 All methods accept **decoded JSON values**, including arrays, `stdClass`, scalars,
-`JsonSerializable` values, references and lazy fragments. A string is a JSON string
-value, not an encoded document. Decode textual JSON explicitly:
+`JsonSerializable` values, backed enums (`BackedEnum`), references and lazy fragments.
+A string is a JSON string value, not an encoded document. Decode textual JSON explicitly:
 
 ```php
 $data = json_decode($encodedJson, associative: false, flags: JSON_THROW_ON_ERROR);
@@ -155,6 +155,12 @@ normalized by invoking their serialization method; their own side effects remain
 the caller's responsibility. Existing fragments retain their lazy caches, which
 may be populated during resolution. Object values returned from those caches are
 defensive copies.
+
+Backed enums are normalized to their string or integer backing value, including
+when nested in arrays or objects. `JsonSerializable` takes precedence when an enum
+implements it. Backing values undergo the same JSON validation as other scalars,
+including UTF-8 validation for strings. Non-backed enums are rejected unless they
+implement `JsonSerializable`.
 
 ### Select branches using JSON Pointer
 

@@ -8,7 +8,12 @@ use ByCerfrance\JsonFragments\Internal\JsonValue;
 use ByCerfrance\JsonFragments\JsonFragment;
 use ByCerfrance\JsonFragments\JsonReference;
 use ByCerfrance\JsonFragments\Resolver\JsonReferenceResolverInterface;
+use ByCerfrance\JsonFragments\Tests\Fixture\IntBackedEnum;
+use ByCerfrance\JsonFragments\Tests\Fixture\PureEnum;
+use ByCerfrance\JsonFragments\Tests\Fixture\SerializableBackedEnum;
+use ByCerfrance\JsonFragments\Tests\Fixture\StringBackedEnum;
 use InvalidArgumentException;
+use JsonException;
 use JsonSerializable;
 use Override;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -20,6 +25,62 @@ use PHPUnit\Framework\TestCase;
 #[UsesClass(JsonReference::class)]
 final class JsonValueTest extends TestCase
 {
+    public function testCopyNormalizesBackedEnumsToTheirScalarValues(): void
+    {
+        self::assertSame('ready', JsonValue::copy(StringBackedEnum::Ready));
+        self::assertSame(0, JsonValue::copy(IntBackedEnum::Zero));
+    }
+
+    public function testNestedBackedEnumsPreserveStructureWithoutMutatingInput(): void
+    {
+        $object = (object)['status' => StringBackedEnum::Ready, 'code' => IntBackedEnum::Zero];
+        $input = ['items' => [$object]];
+
+        $copy = JsonValue::copy($input);
+
+        self::assertNotSame($object, $copy['items'][0]);
+        self::assertSame('ready', $copy['items'][0]->status);
+        self::assertSame(0, $copy['items'][0]->code);
+        self::assertSame(StringBackedEnum::Ready, $object->status);
+        self::assertSame(IntBackedEnum::Zero, $object->code);
+        self::assertSame('{"items":[{"code":0,"status":"ready"}]}', JsonValue::encode($input));
+    }
+
+    public function testJsonSerializableTakesPriorityOverBackingValue(): void
+    {
+        self::assertSame(['status' => 'ready'], JsonValue::copy(SerializableBackedEnum::Ready));
+        self::assertSame('{"status":"ready"}', JsonValue::encode(SerializableBackedEnum::Ready));
+    }
+
+    public function testCopyNormalizesBackedEnumReturnedByJsonSerializable(): void
+    {
+        $serializable = new class implements JsonSerializable {
+            #[Override]
+            public function jsonSerialize(): mixed
+            {
+                return IntBackedEnum::Zero;
+            }
+        };
+
+        self::assertSame(0, JsonValue::copy($serializable));
+        self::assertSame('0', JsonValue::encode($serializable));
+    }
+
+    public function testBackedEnumWithInvalidUtf8IsRejectedDuringCopy(): void
+    {
+        $this->expectException(JsonException::class);
+        $this->expectExceptionCode(JSON_ERROR_UTF8);
+
+        JsonValue::copy(StringBackedEnum::InvalidUtf8);
+    }
+
+    public function testPureEnumWithoutJsonSerializableIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        JsonValue::copy(PureEnum::Ready);
+    }
+
     public function testCopyNormalizesNestedSerializableValuesWithoutMutatingInput(): void
     {
         $object = (object)['amount' => 120];
